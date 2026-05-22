@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch_geometric.data import Batch, Data
 from torch_geometric.nn import GATv2Conv
-from transformers import AutoModel
+from transformers import BertModel
 
 
 class GeneformerEncoder(nn.Module):
@@ -14,7 +14,7 @@ class GeneformerEncoder(nn.Module):
 
     def __init__(self, hidden_dim: int = 256):
         super().__init__()
-        self.backbone = AutoModel.from_pretrained(self.MODEL_ID)
+        self.backbone = BertModel.from_pretrained(self.MODEL_ID, ignore_mismatched_sizes=True)
 
         for param in self.backbone.parameters():
             param.requires_grad = False
