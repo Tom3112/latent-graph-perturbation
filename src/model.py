@@ -23,9 +23,12 @@ class GeneformerEncoder(nn.Module):
         self.proj = nn.Linear(geneformer_dim, hidden_dim)
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        # Backbone is pinned to CPU (frozen, no grads) — move inputs, then bring CLS back
+        backbone_dev = next(self.backbone.parameters()).device
         with torch.no_grad():
-            out = self.backbone(input_ids=input_ids.cpu(), attention_mask=attention_mask.cpu())
+            out = self.backbone(
+                input_ids=input_ids.to(backbone_dev),
+                attention_mask=attention_mask.to(backbone_dev),
+            )
         cls = out.last_hidden_state[:, 0, :].to(self.proj.weight.device)  # [B, hidden_size]
         return self.proj(cls)                                               # [B, hidden_dim]
 
