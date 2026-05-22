@@ -209,10 +209,11 @@ def train(args):
     print(f"Graph: {graph.num_nodes} nodes, {graph.edge_index.shape[1]} edges")
 
     model = LatentGraphPerturbationEngine(num_genes=num_genes).to(device)
+    # GAT runs on CPU regardless of device: B sequential passes × 1.7M edges accumulate
+    # too many activation tensors in GPU memory for backprop. Sparse ops have no GPU benefit.
+    model.gat.cpu()
     if device.type == "mps":
-        # MPS has limited unified memory — pin large non-trainable modules to CPU
-        model.encoder.backbone.cpu()
-        model.gat.cpu()
+        model.encoder.backbone.cpu()  # frozen — keep off MPS to avoid OOM on long sequences
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {trainable:,}")
 
