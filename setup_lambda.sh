@@ -28,7 +28,7 @@ pip install \
     scanpy \
     scipy \
     seaborn \
-    "transformers<5.0.0"  # Geneformer (ctheodoris/Geneformer) requires transformers 4.x
+    transformers
 
 # -- Data: copy NormanWeissman2019_filtered.h5ad from your Mac ----------------
 # Run this from your LOCAL machine (replace <LAMBDA_IP>):
