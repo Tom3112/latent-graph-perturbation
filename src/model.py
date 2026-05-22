@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch_geometric.data import Batch, Data
 from torch_geometric.nn import GATv2Conv
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel
 
 
 class GeneformerEncoder(nn.Module):
@@ -14,7 +14,6 @@ class GeneformerEncoder(nn.Module):
 
     def __init__(self, hidden_dim: int = 256):
         super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained(self.MODEL_ID)
         self.backbone = AutoModel.from_pretrained(self.MODEL_ID)
 
         for param in self.backbone.parameters():
