@@ -2,7 +2,7 @@
 
 import torch
 import torch.nn as nn
-from torch_geometric.data import Data
+from torch_geometric.data import Batch, Data
 from torch_geometric.nn import GATv2Conv
 from transformers import AutoModel, AutoTokenizer
 
@@ -17,7 +17,6 @@ class GeneformerEncoder(nn.Module):
         self.tokenizer = AutoTokenizer.from_pretrained(self.MODEL_ID)
         self.backbone = AutoModel.from_pretrained(self.MODEL_ID)
 
-        # Freeze all Geneformer weights
         for param in self.backbone.parameters():
             param.requires_grad = False
 
@@ -25,10 +24,11 @@ class GeneformerEncoder(nn.Module):
         self.proj = nn.Linear(geneformer_dim, hidden_dim)
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        # Backbone is pinned to CPU (frozen, no grads) — move inputs, then bring CLS back
         with torch.no_grad():
-            out = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
-        cls = out.last_hidden_state[:, 0, :]  # [B, hidden_size]
-        return self.proj(cls)  # [B, hidden_dim]
+            out = self.backbone(input_ids=input_ids.cpu(), attention_mask=attention_mask.cpu())
+        cls = out.last_hidden_state[:, 0, :].to(self.proj.weight.device)  # [B, hidden_size]
+        return self.proj(cls)                                               # [B, hidden_dim]
 
 
 class GeneGAT(nn.Module):
@@ -51,9 +51,8 @@ class PerturbationDecoder(nn.Module):
 
     def __init__(self, cell_dim: int, gene_dim: int, num_genes: int):
         super().__init__()
-        in_dim = cell_dim + gene_dim
         self.mlp = nn.Sequential(
-            nn.Linear(in_dim, 512),
+            nn.Linear(cell_dim + gene_dim, 512),
             nn.LayerNorm(512),
             nn.GELU(),
             nn.Dropout(0.1),
@@ -63,11 +62,6 @@ class PerturbationDecoder(nn.Module):
         )
 
     def forward(self, cell_emb: torch.Tensor, graph_summary: torch.Tensor) -> torch.Tensor:
-        """
-        cell_emb:      [B, cell_dim]
-        graph_summary: [gene_dim]  — mean-pooled GAT output, broadcast over batch
-        """
-        graph_summary = graph_summary.unsqueeze(0).expand(cell_emb.size(0), -1)
         return self.mlp(torch.cat([cell_emb, graph_summary], dim=-1))
 
 
@@ -77,15 +71,32 @@ class LatentGraphPerturbationEngine(nn.Module):
         self.encoder = GeneformerEncoder(hidden_dim=cell_hidden)
         self.gat = GeneGAT(in_channels=1, hidden_channels=gene_hidden, heads=gat_heads)
         self.decoder = PerturbationDecoder(cell_dim=cell_hidden, gene_dim=gene_hidden, num_genes=num_genes)
+        self._num_genes = num_genes
 
     def forward(
         self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-        node_features: torch.Tensor,  # [num_genes, 1] — masked expression values
+        input_ids: torch.Tensor,       # [B, seq_len]
+        attention_mask: torch.Tensor,  # [B, seq_len]
+        node_features: torch.Tensor,   # [B, num_genes, 1] or [num_genes, 1]
         graph: Data,
     ) -> torch.Tensor:
-        cell_emb = self.encoder(input_ids, attention_mask)
-        gene_emb = self.gat(node_features, graph.edge_index, graph.edge_attr)
-        graph_summary = gene_emb.mean(dim=0)
-        return self.decoder(cell_emb, graph_summary)
+        cell_emb = self.encoder(input_ids, attention_mask)  # [B, cell_hidden]
+
+        # GAT may be pinned to CPU to avoid MPS OOM on large sparse graphs
+        gat_dev = next(self.gat.parameters()).device
+        ei = graph.edge_index.to(gat_dev)
+        ea = graph.edge_attr.to(gat_dev)
+
+        if node_features.dim() == 2:
+            gene_emb = self.gat(node_features.to(gat_dev), ei, ea)
+            graph_summary = gene_emb.mean(dim=0).unsqueeze(0).expand(cell_emb.size(0), -1)
+        else:
+            # [B, num_genes, 1] — run GAT per item; activations stay on CPU, no MPS pressure
+            B = node_features.size(0)
+            graph_summaries = []
+            for i in range(B):
+                gene_emb = self.gat(node_features[i].to(gat_dev), ei, ea)
+                graph_summaries.append(gene_emb.mean(dim=0))
+            graph_summary = torch.stack(graph_summaries)  # [B, gene_hidden] on gat_dev
+
+        return self.decoder(cell_emb, graph_summary.to(cell_emb.device))  # [B, num_genes]
